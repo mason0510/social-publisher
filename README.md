@@ -1,6 +1,6 @@
 # Social Publisher
 
-> 🚀 一个优雅的社交媒体内容发布工具，支持多平台编排和自动化发布
+> 🌍 国际社交媒体内容发布工具 - 专注于 X/Twitter、Reddit、YouTube、TikTok 等海外平台
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.7%2B-blue)](https://www.python.org/downloads/)
@@ -10,7 +10,14 @@
 
 ## 📋 简介
 
-**Social Publisher** 是一个分层架构的社交媒体内容发布工具，采用平台管理与工作流编排分离的设计，支持多平台内容发布、故障隔离和自动化编排。
+**Social Publisher** 是一个专为**国际社交媒体平台**设计的内容发布工具，采用分层架构，支持 X/Twitter、Reddit、YouTube、TikTok 等海外平台的自动化发布和编排。
+
+**设计原则**：
+- 🌍 **聚焦国际平台**：专注于 X、Reddit、YouTube、TikTok 等海外社交媒体
+- 🇨🇳 **国内平台分离**：国内平台由独立 CLI 工具处理（更复杂的认证和审核机制）
+  - `tech-publish` - 掘金、CSDN、知乎（技术内容平台）
+  - `douyin-cli` - 抖音（短视频）
+  - `xhs-cli` - 小红书（社交电商）
 
 **核心特性**:
 - 🎯 **统一接口**: 一套命令管理多平台发布
@@ -21,24 +28,53 @@
 
 ---
 
-## ✨ 核心功能
+## ✨ 支持的平台
 
-### ts - Twitter/X 完整管理
+### ✅ 已实现
 
-- ✅ 搜索推文和推荐流
+#### X/Twitter（完整支持）
 - ✅ 发布文本和多图推文（1-4张）
 - ✅ 发布 Thread（双格式支持）
+- ✅ Quote 转发（引用推文）
 - ✅ 回复推文
+- ✅ 搜索推文和推荐流
 - ✅ 删除推文
 - ✅ JSON 输出
 
-### social - 多平台编排
+**命令**: `ts`
+
+### 📝 规划中（TODO）
+
+#### Reddit
+- 📝 发布帖子到指定 Subreddit
+- 📝 评论和回复
+- 📝 跨版块发布
+
+**命令**: `reddit` (TODO - 欢迎贡献)
+
+#### YouTube
+- 📝 上传视频
+- 📝 设置标题、描述、标签
+- 📝 管理播放列表
+
+**命令**: `youtube` (TODO - 欢迎贡献)
+
+#### TikTok
+- 📝 上传短视频
+- 📝 添加标题和话题标签
+- 📝 定时发布
+
+**命令**: `tiktok` (TODO - 欢迎贡献)
+
+---
+
+## 🎯 多平台编排（social 命令）
 
 - ✅ 平台配置管理
 - ✅ 单平台发布
 - ✅ 多平台发布
 - ✅ Thread 编排
-- ✅ 故障隔离
+- ✅ 故障隔离（单平台失败不影响其他）
 
 ---
 

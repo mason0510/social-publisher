@@ -1,6 +1,6 @@
 # Social Publisher
 
-> 🚀 An elegant social media content publishing tool with multi-platform orchestration and automation support
+> 🌍 International Social Media Publishing Tool - Focus on X/Twitter, Reddit, YouTube, TikTok and other global platforms
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.7%2B-blue)](https://www.python.org/downloads/)
@@ -10,7 +10,14 @@
 
 ## 📋 Introduction
 
-**Social Publisher** is a layered social media content publishing tool that separates platform management from workflow orchestration, supporting multi-platform publishing with fault isolation and automation.
+**Social Publisher** is a content publishing tool designed specifically for **international social media platforms**, featuring layered architecture and supporting automated publishing and orchestration across X/Twitter, Reddit, YouTube, TikTok and other global platforms.
+
+**Design Principles**:
+- 🌍 **Focus on International Platforms**: Dedicated to X, Reddit, YouTube, TikTok and other global social media
+- 🇨🇳 **Separate Chinese Platforms**: Chinese platforms are handled by separate CLI tools (due to more complex authentication and review mechanisms)
+  - `tech-publish` - Juejin, CSDN, Zhihu (tech content platforms)
+  - `douyin-cli` - Douyin/TikTok China (short videos)
+  - `xhs-cli` - Xiaohongshu/RED (social e-commerce)
 
 **Core Features**:
 - 🎯 **Unified Interface**: Single command set for multi-platform publishing
@@ -21,24 +28,53 @@
 
 ---
 
-## ✨ Key Features
+## ✨ Supported Platforms
 
-### ts - Twitter/X Complete Management
+### ✅ Implemented
 
-- ✅ Search tweets and feeds
+#### X/Twitter (Full Support)
 - ✅ Publish text and multi-image tweets (1-4 images)
 - ✅ Publish threads (dual format support)
+- ✅ Quote tweets (retweet with comment)
 - ✅ Reply to tweets
+- ✅ Search tweets and feeds
 - ✅ Delete tweets
 - ✅ JSON output
 
-### social - Multi-Platform Orchestration
+**Command**: `ts`
+
+### 📝 Planned (TODO)
+
+#### Reddit
+- 📝 Publish posts to specific Subreddits
+- 📝 Comment and reply
+- 📝 Cross-subreddit publishing
+
+**Command**: `reddit` (TODO - contributions welcome)
+
+#### YouTube
+- 📝 Upload videos
+- 📝 Set title, description, tags
+- 📝 Manage playlists
+
+**Command**: `youtube` (TODO - contributions welcome)
+
+#### TikTok
+- 📝 Upload short videos
+- 📝 Add titles and hashtags
+- 📝 Scheduled publishing
+
+**Command**: `tiktok` (TODO - contributions welcome)
+
+---
+
+## 🎯 Multi-Platform Orchestration (social command)
 
 - ✅ Platform configuration management
 - ✅ Single platform publishing
 - ✅ Multi-platform publishing
 - ✅ Thread orchestration
-- ✅ Fault isolation
+- ✅ Fault isolation (single platform failure doesn't affect others)
 
 ---
 
