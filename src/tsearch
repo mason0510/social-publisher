@@ -1,0 +1,691 @@
+#!/usr/bin/env python3
+"""
+tsearch - Twitter/X 完整管理 CLI
+
+用法:
+    ts <关键词> [选项]              # 搜索（默认）
+    ts post <内容> [选项]           # 发推
+    ts thread <文件> [选项]         # 发 Thread
+    ts reply <tweet_id> <内容>      # 回复
+    ts delete <tweet_id>            # 删除
+    ts --feed                       # 推荐流
+    ts --following                  # 关注流
+
+示例:
+    ts "AI"                         # 搜索
+    ts post "Hello World"           # 发推
+    ts post --file tweet.txt        # 从文件发推
+    ts post --images a.jpg b.jpg    # 发多图（最多4张）
+    ts thread --file thread.txt     # 发 Thread
+    ts thread --file thread.txt --images img1.jpg img2.jpg  # Thread 带图
+    ts reply 123456 "回复内容"      # 回复推文
+    ts delete 123456                # 删除推文
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import subprocess
+
+import requests
+from requests_oauthlib import OAuth1
+
+BASE_URL = "http://localhost:9531"
+API_URL = f"{BASE_URL}/search"
+FEED_URL = f"{BASE_URL}/feed"
+HEALTH_URL = f"{BASE_URL}/health"
+WARMUP_URL = f"{BASE_URL}/warmup"
+BITBROWSER_API = "http://localhost:54345"
+BROWSER_NAME = "us-notebookllm-02_1"
+
+
+def load_env_file():
+    """从.env文件加载环境变量"""
+    env_path = os.path.expanduser('~/.claude/credentials/.env')
+    env_vars = {}
+
+    try:
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    env_vars[key] = value
+        return env_vars
+    except Exception as e:
+        print(f"❌ 读取环境变量文件失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_twitter_auth():
+    """获取Twitter OAuth认证"""
+    env_vars = load_env_file()
+
+    api_key = env_vars.get('TWITTER_API_KEY')
+    api_secret = env_vars.get('TWITTER_API_SECRET')
+    access_token = env_vars.get('TWITTER_ACCESS_TOKEN')
+    access_token_secret = env_vars.get('TWITTER_ACCESS_TOKEN_SECRET')
+
+    if not all([api_key, api_secret, access_token, access_token_secret]):
+        print("❌ Twitter API凭证不完整", file=sys.stderr)
+        sys.exit(1)
+
+    return OAuth1(api_key, api_secret, access_token, access_token_secret)
+
+
+def upload_images(image_paths):
+    """上传图片到Twitter（支持1-4张）"""
+    auth = get_twitter_auth()
+    upload_url = "https://upload.twitter.com/1.1/media/upload.json"
+
+    media_ids = []
+
+    for image_path in image_paths:
+        if not os.path.exists(image_path):
+            print(f"❌ 图片文件不存在: {image_path}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"📤 正在上传图片: {image_path}...", file=sys.stderr)
+
+        with open(image_path, 'rb') as f:
+            files = {'media': f}
+            upload_resp = requests.post(upload_url, auth=auth, files=files)
+
+        if upload_resp.status_code != 200:
+            print(f"❌ 图片上传失败: {upload_resp.text}", file=sys.stderr)
+            sys.exit(1)
+
+        media_id = upload_resp.json()['media_id_string']
+        media_ids.append(media_id)
+        print(f"✅ 图片上传成功: {media_id}", file=sys.stderr)
+
+    return media_ids
+
+
+def post_tweet(text, image_paths=None, reply_to=None):
+    """发布推文（支持多图、回复）
+
+    Args:
+        text: 推文内容
+        image_paths: 图片路径列表（最多4张）
+        reply_to: 回复的推文ID
+
+    Returns:
+        dict: {'success': bool, 'tweet_id': str, 'url': str}
+    """
+    auth = get_twitter_auth()
+
+    # 上传图片
+    media_ids = []
+    if image_paths:
+        if len(image_paths) > 4:
+            print("⚠️  Twitter 最多支持 4 张图片，将只上传前 4 张", file=sys.stderr)
+            image_paths = image_paths[:4]
+        media_ids = upload_images(image_paths)
+
+    # 构建推文
+    url = "https://api.twitter.com/2/tweets"
+    payload = {"text": text}
+
+    if media_ids:
+        payload["media"] = {"media_ids": media_ids}
+
+    if reply_to:
+        payload["reply"] = {"in_reply_to_tweet_id": str(reply_to)}
+
+    print(f"\n🚀 正在发布推文...", file=sys.stderr)
+    print(f"   字符数: {len(text)}", file=sys.stderr)
+    if len(text) > 100:
+        print(f"   内容预览: {text[:100]}...", file=sys.stderr)
+    else:
+        print(f"   内容: {text}", file=sys.stderr)
+
+    if reply_to:
+        print(f"   回复: {reply_to}", file=sys.stderr)
+    if media_ids:
+        print(f"   图片: {len(media_ids)} 张", file=sys.stderr)
+
+    try:
+        response = requests.post(
+            url,
+            auth=auth,
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
+
+        if response.status_code == 201:
+            data = response.json()
+            tweet_id = data['data']['id']
+            tweet_url = f"https://twitter.com/user/status/{tweet_id}"
+
+            print(f"\n✅ 推文发布成功！", file=sys.stderr)
+            print(f"   Tweet ID: {tweet_id}", file=sys.stderr)
+            print(f"   URL: {tweet_url}", file=sys.stderr)
+
+            return {
+                'success': True,
+                'tweet_id': tweet_id,
+                'url': tweet_url
+            }
+        else:
+            print(f"\n❌ 发布失败", file=sys.stderr)
+            print(f"   状态码: {response.status_code}", file=sys.stderr)
+            print(f"   响应: {response.text}", file=sys.stderr)
+
+            return {
+                'success': False,
+                'error': response.text
+            }
+
+    except Exception as e:
+        print(f"\n❌ 发生错误: {e}", file=sys.stderr)
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def post_thread(tweets, image_paths=None):
+    """发布 Thread（连续推文）
+
+    Args:
+        tweets: 推文内容列表
+        image_paths: 图片路径列表（可选，每条推文平均分配）
+
+    Returns:
+        list: [{'success': bool, 'tweet_id': str, 'url': str}, ...]
+    """
+    results = []
+    previous_tweet_id = None
+
+    print(f"\n🧵 开始发布 Thread（共 {len(tweets)} 条）...\n", file=sys.stderr)
+
+    for i, tweet_text in enumerate(tweets, 1):
+        print(f"📝 [{i}/{len(tweets)}] 发布中...", file=sys.stderr)
+
+        # 如果有图片，只给第一条推文添加
+        tweet_images = image_paths if (i == 1 and image_paths) else None
+
+        result = post_tweet(
+            tweet_text,
+            image_paths=tweet_images,
+            reply_to=previous_tweet_id
+        )
+
+        results.append(result)
+
+        if result['success']:
+            previous_tweet_id = result['tweet_id']
+            print(f"✅ [{i}/{len(tweets)}] 发布成功\n", file=sys.stderr)
+
+            # 避免 API 限流，等待 2 秒
+            if i < len(tweets):
+                time.sleep(2)
+        else:
+            print(f"❌ [{i}/{len(tweets)}] 发布失败，Thread 中断\n", file=sys.stderr)
+            break
+
+    # 统计结果
+    success_count = sum(1 for r in results if r['success'])
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"📊 Thread 发布完成", file=sys.stderr)
+    print(f"✅ 成功: {success_count}/{len(tweets)}", file=sys.stderr)
+    print(f"❌ 失败: {len(tweets) - success_count}/{len(tweets)}", file=sys.stderr)
+
+    if results and results[0]['success']:
+        print(f"\n🔗 查看 Thread: {results[0]['url']}", file=sys.stderr)
+
+    return results
+
+
+def parse_thread_file(file_path):
+    """解析 Thread 文件
+
+    格式1（分隔符）:
+        第一条推文内容
+        ---
+        第二条推文内容
+        ---
+        第三条推文内容
+
+    格式2（编号）:
+        1/ 第一条推文内容
+
+        2/ 第二条推文内容
+
+        3/ 第三条推文内容
+
+    Returns:
+        list: 推文内容列表
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 尝试格式1：分隔符
+        if '---' in content:
+            tweets = [t.strip() for t in content.split('---') if t.strip()]
+            return tweets
+
+        # 尝试格式2：编号
+        pattern = r'^\d+/\s+'
+        lines = content.split('\n')
+        tweets = []
+        current_tweet = []
+
+        for line in lines:
+            if re.match(pattern, line):
+                # 遇到新的编号，保存上一条
+                if current_tweet:
+                    tweets.append('\n'.join(current_tweet).strip())
+                    current_tweet = []
+                # 去掉编号，保留内容
+                current_tweet.append(re.sub(pattern, '', line))
+            else:
+                if line.strip() or current_tweet:  # 非空行或已经在收集推文中
+                    current_tweet.append(line)
+
+        # 保存最后一条
+        if current_tweet:
+            tweets.append('\n'.join(current_tweet).strip())
+
+        if tweets:
+            return tweets
+
+        # 如果都不匹配，当作单条推文
+        return [content.strip()]
+
+    except Exception as e:
+        print(f"❌ 读取文件失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def delete_tweet(tweet_id):
+    """删除推文"""
+    auth = get_twitter_auth()
+    url = f"https://api.twitter.com/2/tweets/{tweet_id}"
+
+    print(f"🗑️  正在删除推文 {tweet_id}...", file=sys.stderr)
+
+    try:
+        response = requests.delete(url, auth=auth)
+
+        if response.status_code == 200:
+            print(f"✅ 推文已成功删除", file=sys.stderr)
+            return True
+        else:
+            print(f"❌ 删除失败", file=sys.stderr)
+            print(f"   状态码: {response.status_code}", file=sys.stderr)
+            print(f"   响应: {response.text}", file=sys.stderr)
+            return False
+
+    except Exception as e:
+        print(f"❌ 发生错误: {e}", file=sys.stderr)
+        return False
+
+
+def start_bitbrowser_app():
+    """启动 BitBrowser 应用"""
+    try:
+        print("... 正在启动 BitBrowser 应用...", file=sys.stderr)
+        subprocess.run(["open", "-a", "BitBrowser Global"], check=True)
+        for i in range(10):
+            time.sleep(1)
+            try:
+                resp = requests.get(f"{BITBROWSER_API}/", timeout=2)
+                if resp.status_code:
+                    print("BitBrowser 已启动", file=sys.stderr)
+                    return True
+            except:
+                pass
+        return True
+    except Exception as e:
+        print(f"启动 BitBrowser 失败: {e}", file=sys.stderr)
+        return False
+
+
+def open_bitbrowser_window(retry_after_start=True):
+    """自动打开 BitBrowser 窗口"""
+    try:
+        resp = requests.post(
+            f"{BITBROWSER_API}/browser/list",
+            json={"page": 0, "pageSize": 100},
+            timeout=5
+        )
+        data = resp.json()
+
+        if not data.get("success"):
+            return False, "无法获取浏览器列表"
+
+        browser_id = None
+        for browser in data.get("data", {}).get("list", []):
+            if browser.get("name") == BROWSER_NAME:
+                browser_id = browser.get("id")
+                break
+
+        if not browser_id:
+            return False, f"未找到浏览器配置: {BROWSER_NAME}"
+
+        print(f"... 正在启动 BitBrowser 窗口 '{BROWSER_NAME}'...", file=sys.stderr)
+        resp = requests.post(
+            f"{BITBROWSER_API}/browser/open",
+            json={"id": browser_id},
+            timeout=30
+        )
+        data = resp.json()
+
+        if data.get("success"):
+            time.sleep(3)
+            return True, "窗口已启动"
+        else:
+            return False, data.get("msg", "打开失败")
+
+    except requests.exceptions.ConnectionError:
+        if retry_after_start:
+            if start_bitbrowser_app():
+                return open_bitbrowser_window(retry_after_start=False)
+        return False, "BitBrowser 应用未运行"
+    except Exception as e:
+        return False, str(e)
+
+
+def check_prerequisites():
+    """检查前置条件：服务和浏览器窗口（仅搜索功能需要）"""
+    try:
+        resp = requests.get(HEALTH_URL, timeout=3)
+        data = resp.json()
+
+        if not data.get("connected"):
+            print("... 正在连接 BitBrowser...", file=sys.stderr)
+            try:
+                warmup_resp = requests.get(WARMUP_URL, timeout=15)
+                warmup_data = warmup_resp.json()
+                if warmup_data.get("success"):
+                    print("连接成功", file=sys.stderr)
+                    return True
+            except:
+                pass
+
+            success, msg = open_bitbrowser_window()
+            if not success:
+                print(f"错误: {msg}", file=sys.stderr)
+                sys.exit(1)
+
+            try:
+                warmup_resp = requests.get(WARMUP_URL, timeout=15)
+                warmup_data = warmup_resp.json()
+                if warmup_data.get("success"):
+                    print("连接成功", file=sys.stderr)
+                    return True
+            except:
+                pass
+
+            print("连接失败，请检查 BitBrowser 窗口是否正常", file=sys.stderr)
+            sys.exit(1)
+        return True
+
+    except requests.exceptions.ConnectionError:
+        print("Twitter 搜索服务未启动", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("请手动启动服务：", file=sys.stderr)
+        print("  cd ~/code/06-production-business-money-live/twitter-scraper-skills/server", file=sys.stderr)
+        print("  python3 start.py", file=sys.stderr)
+        sys.exit(1)
+
+
+def format_results(results: list, title: str, time_cost: str):
+    """格式化输出结果"""
+    count = len(results)
+    print(f"\n{title}")
+    print(f"结果: {count} 条 | 耗时: {time_cost}")
+    print("-" * 60)
+
+    if count == 0:
+        print("\n未找到结果")
+        print("提示: 请确保已在 BitBrowser 窗口登录 x.com")
+        print()
+        return
+
+    for i, item in enumerate(results, 1):
+        username = item.get("username", "")
+        display_name = item.get("display_name", "")
+        content = item.get("content", "")
+        url = item.get("url", "")
+        time_str = item.get("time", "")
+        stats = item.get("stats", {})
+
+        # 构建互动数据显示
+        stats_str = ""
+        if stats:
+            parts = []
+            if stats.get("replies"):
+                parts.append(f"回复:{stats['replies']}")
+            if stats.get("retweets"):
+                parts.append(f"转发:{stats['retweets']}")
+            if stats.get("likes"):
+                parts.append(f"赞:{stats['likes']}")
+            if parts:
+                stats_str = " | ".join(parts)
+
+        print(f"\n{i}. @{username}", end="")
+        if display_name and display_name != username:
+            print(f" ({display_name})", end="")
+        print()
+
+        if content:
+            content_clean = content.replace('\n', ' ')
+            if len(content_clean) > 300:
+                print(f"   {content_clean[:300]}...")
+            else:
+                print(f"   {content_clean}")
+
+        if time_str:
+            print(f"   时间: {time_str}")
+        if stats_str:
+            print(f"   {stats_str}")
+        print(f"   链接: {url}")
+
+    print()
+
+
+def search(keyword: str, limit: int = 5, output_json: bool = False, sort: str = "top"):
+    """执行搜索"""
+    try:
+        resp = requests.get(API_URL, params={"q": keyword, "limit": limit, "sort": sort}, timeout=30)
+        data = resp.json()
+
+        if not data.get("success"):
+            print(f"错误: {data.get('error', '未知错误')}", file=sys.stderr)
+            sys.exit(1)
+
+        if output_json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+
+        sort_label = "最新" if sort in ("new", "live") else "热门"
+        format_results(
+            data.get("results", []),
+            f"Twitter/X 搜索: {keyword} ({sort_label})",
+            data.get("time", "N/A")
+        )
+
+    except requests.exceptions.ConnectionError:
+        print("错误: 无法连接到搜索服务", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"错误: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_feed(limit: int = 5, output_json: bool = False, feed_type: str = "foryou"):
+    """获取推荐流/关注流"""
+    try:
+        resp = requests.get(FEED_URL, params={"limit": limit, "type": feed_type}, timeout=30)
+        data = resp.json()
+
+        if not data.get("success"):
+            print(f"错误: {data.get('error', '未知错误')}", file=sys.stderr)
+            sys.exit(1)
+
+        if output_json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+
+        title = "Twitter/X 推荐流 (For You)" if feed_type == "foryou" else "Twitter/X 关注流 (Following)"
+        format_results(
+            data.get("results", []),
+            title,
+            data.get("time", "N/A")
+        )
+
+    except requests.exceptions.ConnectionError:
+        print("错误: 无法连接到搜索服务", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"错误: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    # 如果没有参数，显示帮助
+    if len(sys.argv) == 1:
+        print(__doc__)
+        sys.exit(0)
+
+    # 检查特殊标志（--feed, --following）
+    if '--feed' in sys.argv:
+        check_prerequisites()
+        limit = 20
+        if '-n' in sys.argv:
+            idx = sys.argv.index('-n')
+            if idx + 1 < len(sys.argv):
+                limit = int(sys.argv[idx + 1])
+        get_feed(limit, '--json' in sys.argv, "foryou")
+        sys.exit(0)
+
+    if '--following' in sys.argv:
+        check_prerequisites()
+        limit = 20
+        if '-n' in sys.argv:
+            idx = sys.argv.index('-n')
+            if idx + 1 < len(sys.argv):
+                limit = int(sys.argv[idx + 1])
+        get_feed(limit, '--json' in sys.argv, "following")
+        sys.exit(0)
+
+    # 解析子命令
+    parser = argparse.ArgumentParser(
+        description="Twitter/X 完整管理 CLI",
+        usage="ts <command> [args]"
+    )
+
+    subparsers = parser.add_subparsers(dest='command')
+
+    # post 命令
+    post_parser = subparsers.add_parser('post', help='发布推文')
+    post_parser.add_argument('text', nargs='?', help='推文内容')
+    post_parser.add_argument('--file', help='从文件读取内容')
+    post_parser.add_argument('--images', nargs='+', help='图片路径（最多4张）')
+    post_parser.add_argument('--json', action='store_true', help='输出JSON格式')
+
+    # thread 命令
+    thread_parser = subparsers.add_parser('thread', help='发布 Thread')
+    thread_parser.add_argument('--file', required=True, help='Thread 文件路径')
+    thread_parser.add_argument('--images', nargs='+', help='图片路径（可选）')
+    thread_parser.add_argument('--json', action='store_true', help='输出JSON格式')
+
+    # reply 命令
+    reply_parser = subparsers.add_parser('reply', help='回复推文')
+    reply_parser.add_argument('tweet_id', help='要回复的推文ID')
+    reply_parser.add_argument('text', help='回复内容')
+    reply_parser.add_argument('--images', nargs='+', help='图片路径（可选）')
+    reply_parser.add_argument('--json', action='store_true', help='输出JSON格式')
+
+    # delete 命令
+    delete_parser = subparsers.add_parser('delete', help='删除推文')
+    delete_parser.add_argument('tweet_id', help='推文ID')
+
+    # 如果第一个参数不是子命令，当作搜索
+    if sys.argv[1] not in ['post', 'thread', 'reply', 'delete']:
+        # 搜索模式
+        search_parser = argparse.ArgumentParser()
+        search_parser.add_argument('keyword', help='搜索关键词')
+        search_parser.add_argument('-n', '--limit', type=int, default=20, help='结果数量')
+        search_parser.add_argument('--json', action='store_true', help='JSON格式')
+        search_parser.add_argument('-s', '--sort', choices=['top', 'new', 'live'], default='top')
+
+        args = search_parser.parse_args()
+        check_prerequisites()
+        search(args.keyword, args.limit, args.json, args.sort)
+        sys.exit(0)
+
+    args = parser.parse_args()
+
+    if args.command == 'post':
+        # 发推
+        if args.file:
+            try:
+                with open(args.file, 'r', encoding='utf-8') as f:
+                    tweet_text = f.read().strip()
+            except Exception as e:
+                print(f"❌ 读取文件失败: {e}", file=sys.stderr)
+                sys.exit(1)
+        elif args.text:
+            tweet_text = args.text
+        else:
+            print("❌ 请提供推文内容或使用 --file 参数", file=sys.stderr)
+            sys.exit(1)
+
+        result = post_tweet(tweet_text, image_paths=args.images)
+
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(result['url'] if result['success'] else '')
+
+        sys.exit(0 if result['success'] else 1)
+
+    elif args.command == 'thread':
+        # 发 Thread
+        tweets = parse_thread_file(args.file)
+
+        if len(tweets) == 0:
+            print("❌ Thread 文件为空", file=sys.stderr)
+            sys.exit(1)
+
+        results = post_thread(tweets, image_paths=args.images)
+
+        if args.json:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+        else:
+            if results and results[0]['success']:
+                print(results[0]['url'])
+
+        sys.exit(0 if all(r['success'] for r in results) else 1)
+
+    elif args.command == 'reply':
+        # 回复推文
+        result = post_tweet(args.text, image_paths=args.images, reply_to=args.tweet_id)
+
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(result['url'] if result['success'] else '')
+
+        sys.exit(0 if result['success'] else 1)
+
+    elif args.command == 'delete':
+        # 删推
+        result = delete_tweet(args.tweet_id)
+        sys.exit(0 if result else 1)
+
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

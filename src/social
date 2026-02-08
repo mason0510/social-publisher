@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""
+social - 社交平台内容发布编排工具
+
+用法:
+    social post <内容> [选项]           # 发布到一个或多个平台
+    social thread <文件> [选项]         # 发布 Thread
+    social config [选项]                # 配置管理
+
+发布选项:
+    --all                   发布到所有已配置平台
+    --platforms PLATFORMS   指定平台（逗号分隔），如: twitter,weibo
+    --file FILE            从文件读取内容
+    --images IMAGES        图片路径（空格分隔）
+
+配置选项:
+    social config list              列出所有平台
+    social config enable PLATFORM   启用平台
+    social config disable PLATFORM  禁用平台
+
+示例:
+    social post "Hello World" --all                    # 发布到所有平台
+    social post "Hello" --platforms twitter            # 仅发布到 Twitter
+    social post --file post.txt --images a.jpg --all   # 多平台图文发布
+    social thread --file thread.txt --platforms twitter # 发布 Thread
+    social config list                                 # 查看平台列表
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+# 平台注册表（当前仅 Twitter）
+PLATFORMS = {
+    'twitter': {
+        'name': 'Twitter/X',
+        'cli': 'ts',
+        'enabled': True,
+        'features': ['post', 'thread', 'reply', 'images']
+    }
+    # 未来可添加:
+    # 'weibo': {...},
+    # 'xhs': {...},
+}
+
+
+def get_config_path():
+    """获取配置文件路径"""
+    config_dir = Path.home() / '.claude'
+    config_dir.mkdir(exist_ok=True)
+    return config_dir / 'social-config.json'
+
+
+def load_config():
+    """加载配置"""
+    config_path = get_config_path()
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {'platforms': PLATFORMS}
+
+
+def save_config(config):
+    """保存配置"""
+    config_path = get_config_path()
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def get_enabled_platforms(config):
+    """获取已启用的平台列表"""
+    return [
+        platform_id
+        for platform_id, platform_info in config['platforms'].items()
+        if platform_info.get('enabled', False)
+    ]
+
+
+def post_to_twitter(content: str, images: Optional[List[str]] = None, json_output: bool = False) -> Dict:
+    """
+    发布到 Twitter
+
+    Args:
+        content: 推文内容
+        images: 图片路径列表
+        json_output: 是否输出JSON格式
+
+    Returns:
+        dict: {'success': bool, 'tweet_id': str, 'url': str, 'error': str}
+    """
+    cmd = ['ts', 'post', content, '--json']
+
+    if images:
+        cmd.extend(['--images'] + images)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0:
+            # 解析 JSON 输出
+            try:
+                output = json.loads(result.stdout)
+                return output
+            except json.JSONDecodeError:
+                return {
+                    'success': False,
+                    'error': f'JSON 解析失败: {result.stdout}'
+                }
+        else:
+            return {
+                'success': False,
+                'error': result.stderr.strip() or result.stdout.strip()
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'success': False,
+            'error': 'Twitter 发布超时（30秒）'
+        }
+    except FileNotFoundError:
+        return {
+            'success': False,
+            'error': 'ts 命令未找到，请确认已安装'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'发布异常: {str(e)}'
+        }
+
+
+def post_thread_to_twitter(file_path: str, images: Optional[List[str]] = None, json_output: bool = False) -> Dict:
+    """
+    发布 Thread 到 Twitter
+
+    Args:
+        file_path: Thread 文件路径
+        images: 图片路径列表
+        json_output: 是否输出JSON格式
+
+    Returns:
+        dict: {'success': bool, 'results': list, 'error': str}
+    """
+    cmd = ['ts', 'thread', '--file', file_path, '--json']
+
+    if images:
+        cmd.extend(['--images'] + images)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            try:
+                output = json.loads(result.stdout)
+                return {
+                    'success': True,
+                    'results': output
+                }
+            except json.JSONDecodeError:
+                return {
+                    'success': False,
+                    'error': f'JSON 解析失败: {result.stdout}'
+                }
+        else:
+            return {
+                'success': False,
+                'error': result.stderr.strip() or result.stdout.strip()
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'success': False,
+            'error': 'Twitter Thread 发布超时（60秒）'
+        }
+    except FileNotFoundError:
+        return {
+            'success': False,
+            'error': 'ts 命令未找到，请确认已安装'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'发布异常: {str(e)}'
+        }
+
+
+def publish_to_platforms(
+    content: str,
+    platforms: List[str],
+    images: Optional[List[str]] = None,
+    is_thread: bool = False,
+    json_output: bool = False
+) -> Dict[str, Dict]:
+    """
+    发布到多个平台
+
+    Args:
+        content: 内容或文件路径
+        platforms: 平台列表
+        images: 图片列表
+        is_thread: 是否为 Thread
+        json_output: 是否输出JSON
+
+    Returns:
+        dict: {平台名: 发布结果}
+    """
+    results = {}
+
+    for platform_id in platforms:
+        print(f"\n📤 正在发布到 {PLATFORMS[platform_id]['name']}...", file=sys.stderr)
+
+        if platform_id == 'twitter':
+            if is_thread:
+                result = post_thread_to_twitter(content, images, json_output)
+            else:
+                result = post_to_twitter(content, images, json_output)
+        else:
+            result = {
+                'success': False,
+                'error': f'平台 {platform_id} 尚未实现'
+            }
+
+        results[platform_id] = result
+
+        # 输出结果
+        if result['success']:
+            if is_thread:
+                first_url = result['results'][0].get('url', '')
+                print(f"   ✅ 成功: {first_url}", file=sys.stderr)
+            else:
+                print(f"   ✅ 成功: {result.get('url', '')}", file=sys.stderr)
+        else:
+            print(f"   ❌ 失败: {result.get('error', '未知错误')}", file=sys.stderr)
+
+    return results
+
+
+def config_list(config):
+    """列出所有平台配置"""
+    print("\n📋 平台列表:\n")
+    for platform_id, platform_info in config['platforms'].items():
+        status = "✅ 已启用" if platform_info.get('enabled') else "❌ 已禁用"
+        features = ", ".join(platform_info.get('features', []))
+        print(f"  {platform_id}")
+        print(f"    名称: {platform_info['name']}")
+        print(f"    状态: {status}")
+        print(f"    CLI: {platform_info.get('cli', 'N/A')}")
+        print(f"    功能: {features}")
+        print()
+
+
+def config_enable(config, platform_id):
+    """启用平台"""
+    if platform_id not in config['platforms']:
+        print(f"❌ 未知平台: {platform_id}", file=sys.stderr)
+        print(f"可用平台: {', '.join(config['platforms'].keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    config['platforms'][platform_id]['enabled'] = True
+    save_config(config)
+    print(f"✅ 已启用平台: {platform_id}")
+
+
+def config_disable(config, platform_id):
+    """禁用平台"""
+    if platform_id not in config['platforms']:
+        print(f"❌ 未知平台: {platform_id}", file=sys.stderr)
+        sys.exit(1)
+
+    config['platforms'][platform_id]['enabled'] = False
+    save_config(config)
+    print(f"✅ 已禁用平台: {platform_id}")
+
+
+def main():
+    if len(sys.argv) == 1:
+        print(__doc__)
+        sys.exit(0)
+
+    parser = argparse.ArgumentParser(
+        description='社交平台内容发布编排工具',
+        usage='social <command> [args]'
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='子命令')
+
+    # post 命令
+    post_parser = subparsers.add_parser('post', help='发布内容')
+    post_parser.add_argument('text', nargs='?', help='内容文本')
+    post_parser.add_argument('--file', help='从文件读取内容')
+    post_parser.add_argument('--all', action='store_true', help='发布到所有平台')
+    post_parser.add_argument('--platforms', help='指定平台（逗号分隔）')
+    post_parser.add_argument('--images', nargs='+', help='图片路径')
+    post_parser.add_argument('--json', action='store_true', help='输出JSON格式')
+
+    # thread 命令
+    thread_parser = subparsers.add_parser('thread', help='发布 Thread')
+    thread_parser.add_argument('--file', required=True, help='Thread 文件路径')
+    thread_parser.add_argument('--all', action='store_true', help='发布到所有平台')
+    thread_parser.add_argument('--platforms', help='指定平台（逗号分隔）')
+    thread_parser.add_argument('--images', nargs='+', help='图片路径')
+    thread_parser.add_argument('--json', action='store_true', help='输出JSON格式')
+
+    # config 命令
+    config_parser = subparsers.add_parser('config', help='配置管理')
+    config_subparsers = config_parser.add_subparsers(dest='config_command')
+
+    config_subparsers.add_parser('list', help='列出所有平台')
+
+    enable_parser = config_subparsers.add_parser('enable', help='启用平台')
+    enable_parser.add_argument('platform', help='平台ID')
+
+    disable_parser = config_subparsers.add_parser('disable', help='禁用平台')
+    disable_parser.add_argument('platform', help='平台ID')
+
+    args = parser.parse_args()
+
+    # 加载配置
+    config = load_config()
+
+    if args.command == 'config':
+        if args.config_command == 'list':
+            config_list(config)
+        elif args.config_command == 'enable':
+            config_enable(config, args.platform)
+        elif args.config_command == 'disable':
+            config_disable(config, args.platform)
+        else:
+            config_parser.print_help()
+        sys.exit(0)
+
+    elif args.command == 'post':
+        # 确定内容
+        if args.file:
+            with open(args.file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+        elif args.text:
+            content = args.text
+        else:
+            print("❌ 必须提供 --file 或文本内容", file=sys.stderr)
+            sys.exit(1)
+
+        # 确定平台
+        if args.all:
+            platforms = get_enabled_platforms(config)
+        elif args.platforms:
+            platforms = [p.strip() for p in args.platforms.split(',')]
+        else:
+            print("❌ 必须指定 --all 或 --platforms", file=sys.stderr)
+            sys.exit(1)
+
+        if not platforms:
+            print("❌ 没有可用的平台，请先启用平台", file=sys.stderr)
+            sys.exit(1)
+
+        # 发布
+        results = publish_to_platforms(
+            content,
+            platforms,
+            images=args.images,
+            is_thread=False,
+            json_output=args.json
+        )
+
+        # 输出 JSON
+        if args.json:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+
+        # 检查是否有失败
+        failures = [p for p, r in results.items() if not r['success']]
+        if failures:
+            print(f"\n⚠️  部分平台发布失败: {', '.join(failures)}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"\n✅ 所有平台发布成功", file=sys.stderr)
+
+    elif args.command == 'thread':
+        # 确定平台
+        if args.all:
+            platforms = get_enabled_platforms(config)
+        elif args.platforms:
+            platforms = [p.strip() for p in args.platforms.split(',')]
+        else:
+            print("❌ 必须指定 --all 或 --platforms", file=sys.stderr)
+            sys.exit(1)
+
+        if not platforms:
+            print("❌ 没有可用的平台，请先启用平台", file=sys.stderr)
+            sys.exit(1)
+
+        # 发布 Thread
+        results = publish_to_platforms(
+            args.file,
+            platforms,
+            images=args.images,
+            is_thread=True,
+            json_output=args.json
+        )
+
+        # 输出 JSON
+        if args.json:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+
+        # 检查是否有失败
+        failures = [p for p, r in results.items() if not r['success']]
+        if failures:
+            print(f"\n⚠️  部分平台发布失败: {', '.join(failures)}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"\n✅ 所有平台发布成功", file=sys.stderr)
+
+    else:
+        parser.print_help()
+
+
+if __name__ == '__main__':
+    main()
